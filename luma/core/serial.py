@@ -176,6 +176,103 @@ class spi(object):
         self._spi.close()
         self._gpio.cleanup()
 
+class firmata_i2c(object):
+    """
+    Wrap an `I2C <https://en.wikipedia.org/wiki/I%C2%B2C>`_ interface on a 
+    microcontroller over serial, to provide data and command methods.
+    It requires a Firmata compatible firmware on the microcontroller. On the
+    host, `PyMata <https://github.com/MrYsLab/PyMata>`_ is required.
+
+    :param tty: Serial device to use.
+    :type tty: str
+    :param sda: SDA pin number, in the form of "A#" for analog and "#" for digital.
+    :type scl: str
+    :param scl: SCL pin number. Use the same GPIO port as SDA (if you used "A#", keep using "A#")
+    :type scl: str
+    :paral address: I2C device address.
+    :type address: int
+    :raises luma.core.error.DeviceAddressError: I2C device address is invalid.
+    :raises luma.core.error.DeviceNotFoundError: Serial device could not be found.
+    :raises luma.core.error.DevicePermissionError: Permission to access serial device
+        denied.
+
+    .. note::
+       1. Only one of ``bus`` OR ``port`` arguments should be supplied;
+          if both are, then ``bus`` takes precedence.
+       2. If ``bus`` is provided, there is an implicit expectation
+          that it has already been opened.
+    """
+    def __init__(self, tty=None, sda="A4", scl="A5", address=0x3C):
+        import PyMata.pymata import PyMata
+        
+        sda = sda.upper()
+        scl = scl.upper()
+
+        if "A" in (sda[0], scl[0]) and scl[0] != sda[0]:
+            raise ValueError("SDA and SCL pins must be of the same type (one of\
+                              them is analog and one is not)")
+        
+        pin_type = self.firmata.ANALOG if sda[0] == "A" else self.firmata.DIGITAL
+
+        if pin_type == self.firmata.ANALOG:
+            sda = int(sda[1:])
+            scl = int(scl[1:])
+        else:
+            sda = int(sda)
+            scl = int(scl)
+
+        self.firmata.i2c_config(pin_type=pin_type, clk_pin=scl, data_pin=sda)
+
+        self._cmd_mode = 0x00
+        self._data_mode = 0x40
+
+        try:
+            self._addr = int(str(address), 0)
+        except ValueError:
+            raise luma.core.error.DeviceAddressError(
+                'I2C device address invalid: {}'.format(address))
+
+        try:
+            self._firmata = PyMata(tty)
+        except (IOError, OSError) as e:
+            if e.errno == errno.ENOENT:
+                # FileNotFoundError
+                raise luma.core.error.DeviceNotFoundError(
+                    'Serial device not found: {}'.format(e.filename))
+            elif e.errno == errno.EPERM or e.errno == errno.EACCES:
+                # PermissionError
+                raise luma.core.error.DevicePermissionError(
+                    'Serial device permission denied: {}'.format(e.filename))
+            else:
+                raise
+
+    def command(self, *cmd):
+        """
+        Sends a command or sequence of commands through to the I2C address
+        - maximum allowed is 32 bytes in one go.
+        """
+        assert(len(cmd) <= 32)
+        self._firmata.i2c_write(self._addr, self._cmd_mode, *cmd)
+
+    def data(self, data):
+        """
+        Sends a data byte or sequence of data bytes through to the I2C
+        address - maximum allowed in one transaction is 32 bytes, so if
+        data is larger than this, it is sent in chunks.
+        """
+        i = 0
+        n = len(data)
+        write = self._firmata.i2c_write
+        while i < n:
+            write(self._addr, self._data_mode, *list(data[i:i + 32]))
+            i += 32
+
+    def cleanup(self):
+        """
+        Clean up I2C resources
+        """
+        self._firmata.close()
+
 
 class noop(object):
     """
